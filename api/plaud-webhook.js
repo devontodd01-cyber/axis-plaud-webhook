@@ -15,17 +15,13 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body;
-    const transcript = body.transcript || body.text || body.content || '';
-    const plaudSummary = body.summary || '';
-    const recordingTitle = body.title || body.name || '';
-    const recordedAt = body.created_at || new Date().toISOString();
-    const duration = body.duration || null;
-    const inputText = transcript || plaudSummary;
+    const inputText = body.transcript || body.text || body.summary || body.content || '';
 
     if (!inputText) {
-      return res.status(400).json({ error: 'No transcript or summary in payload' });
+      return res.status(400).json({ error: 'No transcript in payload' });
     }
 
+    // Call Claude
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -36,54 +32,46 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
-        system: `You are an AI assistant for Axis CRM, a field service CRM for a dental milling machine service company in Calgary, Alberta. The technician is Devon.
-
-Common machines: Roland DWX-51, DWX-51D, DWX-52DCi, DWX-53DC, imes-icore CORiTEC 350i, 450i, 550i.
-Common job types: Preventive Maintenance, Spindle Repair, Axis Calibration, Software Support, Emergency Repair, Parts Installation, Training, Warranty, Service Call.
-Common parts: spindle, A-axis gear, B-axis gear, drawbar, collet, milling burs, disc holder, coolant pump, controller board.
-
-Respond ONLY with valid JSON, no preamble, no markdown:
+        system: `You are an AI assistant for Axis CRM for a dental milling machine service company in Calgary. Technician is Devon. Extract job data from voice transcripts. Respond ONLY with valid JSON:
 {
-  "customer": "customer name or null",
-  "machine": "machine model or null",
-  "serial": "serial number or null",
-  "job_type": "Service Call",
-  "status": "Completed | Parts Pending | Follow-up Required | In Progress | Pending",
-  "priority": "Urgent | High | Normal | Low",
-  "notes": "2-3 sentence professional job note",
-  "key_points": "bullet points starting with •",
-  "parts_needed": ["array of parts or empty"],
-  "followup": true or false,
-  "followup_note": "followup description or null",
-  "followup_date": "YYYY-MM-DD or null",
-  "action_items": [
-    { "type": "parts|followup|call|task|quote", "text": "description", "due": "timeframe or null" }
-  ]
+  "customer": "name or Unknown",
+  "machine": "model or null",
+  "status": "Completed | Parts Pending | Follow-up Required | Pending",
+  "priority": "Normal",
+  "notes": "2-3 sentence summary",
+  "followup": false,
+  "followup_note": null,
+  "followup_date": null
 }`,
-        messages: [{ role: 'user', content: `Parse this field service voice log:\n\n${inputText}` }]
+        messages: [{ role: 'user', content: `Parse: ${inputText}` }]
       })
     });
 
-    const claudeData = await claudeResponse.json();
+    const claudeText = await claudeResponse.text();
+    console.log('Claude status:', claudeResponse.status);
+    console.log('Claude response:', claudeText);
+
+    if (!claudeResponse.ok) {
+      throw new Error(`Claude API failed: ${claudeResponse.status} — ${claudeText}`);
+    }
+
+    const claudeData = JSON.parse(claudeText);
+
+    if (!claudeData.content || !Array.isArray(claudeData.content)) {
+      throw new Error(`Unexpected Claude response structure: ${claudeText}`);
+    }
+
     const rawText = claudeData.content.map(b => b.text || '').join('');
+    console.log('Claude parsed text:', rawText);
+
     const parsed = JSON.parse(rawText.replace(/```json|```/g, '').trim());
 
-    const date = new Date(recordedAt).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    const fullNote = [
-      `📍 VOICE LOG — ${date}${duration ? ` (${Math.round(duration / 60)} min)` : ''}`,
-      recordingTitle ? `Recording: ${recordingTitle}` : '',
-      '', 'SUMMARY:', parsed.notes || '',
-      '', 'KEY POINTS:', parsed.key_points || '',
-      parsed.parts_needed?.length ? '\nPARTS NEEDED:\n' + parsed.parts_needed.map(p => `• ${p}`).join('\n') : '',
-      parsed.action_items?.length ? '\nACTION ITEMS:\n' + parsed.action_items.map(a => `• [${a.type.toUpperCase()}] ${a.text}${a.due ? ' — ' + a.due : ''}`).join('\n') : '',
-      '', '─────────────────────────', 'RAW TRANSCRIPT:', inputText.slice(0, 3000)
-    ].filter(Boolean).join('\n');
-
+    // Insert job
     const jobPayload = {
-      customer: parsed.customer || 'Unknown Customer',
+      customer: parsed.customer || 'Unknown',
       status: parsed.status || 'Pending',
       priority: parsed.priority || 'Normal',
-      notes: fullNote,
+      notes: `📍 VOICE LOG\n\n${parsed.notes}\n\nRAW:\n${inputText.slice(0, 2000)}`,
       followup: parsed.followup || false,
       followup_note: parsed.followup_note || null,
       followup_date: parsed.followup_date || null,
@@ -104,27 +92,21 @@ Respond ONLY with valid JSON, no preamble, no markdown:
     });
 
     const supabaseText = await supabaseRes.text();
-    console.log('Supabase response status:', supabaseRes.status);
-    console.log('Supabase response body:', supabaseText);
+    console.log('Supabase status:', supabaseRes.status);
+    console.log('Supabase body:', supabaseText);
 
     if (!supabaseRes.ok) {
-      throw new Error(`Supabase insert failed: ${supabaseRes.status} — ${supabaseText}`);
+      throw new Error(`Supabase failed: ${supabaseRes.status} — ${supabaseText}`);
     }
 
-    const supabaseData = JSON.parse(supabaseText);
-    const newJob = Array.isArray(supabaseData) ? supabaseData[0] : supabaseData;
-
-    if (!newJob || !newJob.id) {
-      throw new Error(`Job created but no ID returned. Response: ${supabaseText}`);
-    }
+    const rows = JSON.parse(supabaseText);
+    const newJob = Array.isArray(rows) ? rows[0] : rows;
 
     return res.status(200).json({
       success: true,
-      job_id: newJob.id,
+      job_id: newJob?.id || 'unknown',
       customer: parsed.customer,
-      machine: parsed.machine,
-      status: parsed.status,
-      action_items_count: parsed.action_items?.length || 0
+      status: parsed.status
     });
 
   } catch (error) {
