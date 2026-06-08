@@ -1,8 +1,8 @@
 {
   "name": "axis-plaud-webhook",
   "version": "1.0.0",
-  "description": "Plaud → Claude → Axis CRM webhook",
   "private": true,
+  "type": "module",
   "engines": {
     "node": ">=18"
   }
