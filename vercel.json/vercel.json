@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "functions": {
+    "api/plaud-webhook.js": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/plaud-webhook",
+      "dest": "/api/plaud-webhook.js"
+    }
+  ]
+}
