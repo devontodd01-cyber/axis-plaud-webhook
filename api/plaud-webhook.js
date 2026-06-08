@@ -81,18 +81,16 @@ Respond ONLY with valid JSON, no preamble, no markdown:
 
     const jobPayload = {
       customer: parsed.customer || 'Unknown Customer',
-      machine: parsed.machine || null,
-      serial_number: parsed.serial || null,
-      job_type: parsed.job_type || 'Service Call',
       status: parsed.status || 'Pending',
       priority: parsed.priority || 'Normal',
       notes: fullNote,
       followup: parsed.followup || false,
       followup_note: parsed.followup_note || null,
       followup_date: parsed.followup_date || null,
-      created_at: new Date().toISOString(),
-      source: 'plaud_voice'
+      created_at: new Date().toISOString()
     };
+
+    console.log('Inserting job:', JSON.stringify(jobPayload));
 
     const supabaseRes = await fetch(`${SUPABASE_URL}/rest/v1/jobs`, {
       method: 'POST',
@@ -105,44 +103,19 @@ Respond ONLY with valid JSON, no preamble, no markdown:
       body: JSON.stringify(jobPayload)
     });
 
-    const [newJob] = await supabaseRes.json();
+    const supabaseText = await supabaseRes.text();
+    console.log('Supabase response status:', supabaseRes.status);
+    console.log('Supabase response body:', supabaseText);
 
-    if (parsed.action_items?.length) {
-      await fetch(`${SUPABASE_URL}/rest/v1/action_items`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_SERVICE_KEY,
-          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(parsed.action_items.map(item => ({
-          job_id: newJob.id,
-          type: item.type,
-          text: item.text,
-          due: item.due || null,
-          completed: false,
-          created_at: new Date().toISOString()
-        })))
-      });
+    if (!supabaseRes.ok) {
+      throw new Error(`Supabase insert failed: ${supabaseRes.status} — ${supabaseText}`);
     }
 
-    if (parsed.followup && parsed.followup_date) {
-      await fetch(`${SUPABASE_URL}/rest/v1/calendar_notes`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_SERVICE_KEY,
-          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify({
-          date: parsed.followup_date,
-          note: `[Auto] Follow-up: ${parsed.followup_note || parsed.customer} — Job #${newJob.id}`,
-          job_id: newJob.id,
-          created_at: new Date().toISOString()
-        })
-      });
+    const supabaseData = JSON.parse(supabaseText);
+    const newJob = Array.isArray(supabaseData) ? supabaseData[0] : supabaseData;
+
+    if (!newJob || !newJob.id) {
+      throw new Error(`Job created but no ID returned. Response: ${supabaseText}`);
     }
 
     return res.status(200).json({
@@ -151,12 +124,11 @@ Respond ONLY with valid JSON, no preamble, no markdown:
       customer: parsed.customer,
       machine: parsed.machine,
       status: parsed.status,
-      action_items_count: parsed.action_items?.length || 0,
-      followup_scheduled: !!(parsed.followup && parsed.followup_date)
+      action_items_count: parsed.action_items?.length || 0
     });
 
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Webhook error:', error.message);
     return res.status(500).json({ error: error.message, success: false });
   }
 }
